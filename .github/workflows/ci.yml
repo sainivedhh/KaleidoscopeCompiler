@@ -1,0 +1,49 @@
+name: Kaleidoscope CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    name: Build & Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install LLVM (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y llvm-15-dev
+
+    - name: Install LLVM (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install llvm@15
+        echo "LLVM_DIR=$(brew --prefix llvm@15)/lib/cmake/llvm" >> $GITHUB_ENV
+
+    - name: Install LLVM (Windows)
+      if: runner.os == 'Windows'
+      # We download a pre-built binary instead of vcpkg because compiling LLVM from source via vcpkg takes ~2 hours on CI.
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-15.0.7/LLVM-15.0.7-win64.exe" -OutFile "llvm-installer.exe"
+        Start-Process -FilePath "llvm-installer.exe" -ArgumentList "/S", "/D=C:\LLVM" -Wait -NoNewWindow
+        echo "LLVM_DIR=C:\LLVM\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+    - name: Configure CMake
+      run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: cmake --build build --config Release
+
+    - name: Test
+      working-directory: ${{github.workspace}}/build
+      run: ctest -C Release --output-on-failure

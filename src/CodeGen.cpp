@@ -1,0 +1,285 @@
+#include "CodeGen.h"
+#include "AST.h"
+#include <llvm/IR/Verifier.h>
+#include <llvm/ADT/APFloat.h>
+#include <iostream>
+
+std::unique_ptr<llvm::LLVMContext> TheContext;
+std::unique_ptr<llvm::IRBuilder<>> Builder;
+std::unique_ptr<llvm::Module> TheModule;
+std::map<std::string, llvm::Value *> NamedValues;
+std::unique_ptr<llvm::FunctionPassManager> FPM;
+std::unique_ptr<llvm::LoopAnalysisManager> LAM;
+std::unique_ptr<llvm::FunctionAnalysisManager> FAM;
+std::unique_ptr<llvm::CGSCCAnalysisManager> CGAM;
+std::unique_ptr<llvm::ModuleAnalysisManager> MAM;
+std::unique_ptr<llvm::PassInstrumentationCallbacks> PIC;
+std::unique_ptr<llvm::StandardInstrumentations> SI;
+
+void InitializeModule() {
+    TheContext = std::make_unique<llvm::LLVMContext>();
+    TheModule = std::make_unique<llvm::Module>("my cool jit", *TheContext);
+    Builder = std::make_unique<llvm::IRBuilder<>>(*TheContext);
+
+    // Create new pass and analysis managers.
+    FPM = std::make_unique<llvm::FunctionPassManager>();
+    LAM = std::make_unique<llvm::LoopAnalysisManager>();
+    FAM = std::make_unique<llvm::FunctionAnalysisManager>();
+    CGAM = std::make_unique<llvm::CGSCCAnalysisManager>();
+    MAM = std::make_unique<llvm::ModuleAnalysisManager>();
+    PIC = std::make_unique<llvm::PassInstrumentationCallbacks>();
+    SI = std::make_unique<llvm::StandardInstrumentations>(*TheContext, true);
+
+    SI->registerCallbacks(*PIC, MAM.get());
+
+    // Add transform passes.
+    FPM->addPass(llvm::InstCombinePass());
+    FPM->addPass(llvm::ReassociatePass());
+    FPM->addPass(llvm::GVNPass());
+    FPM->addPass(llvm::SimplifyCFGPass());
+
+    // Register analysis passes used in these transform passes.
+    llvm::PassBuilder PB;
+    PB.registerModuleAnalyses(*MAM);
+    PB.registerCGSCCAnalyses(*CGAM);
+    PB.registerFunctionAnalyses(*FAM);
+    PB.registerLoopAnalyses(*LAM);
+    PB.crossRegisterProxies(*LAM, *FAM, *CGAM, *MAM);
+}
+
+llvm::Value *NumberExprAST::codegen() {
+    return llvm::ConstantFP::get(*TheContext, llvm::APFloat(Val));
+}
+
+llvm::Value *VariableExprAST::codegen() {
+    // Look this variable up in the function.
+    llvm::Value *V = NamedValues[Name];
+    if (!V)
+        std::cerr << "Unknown variable name: " << Name << "\n";
+    return V;
+}
+
+llvm::Value *BinaryExprAST::codegen() {
+    llvm::Value *L = LHS->codegen();
+    llvm::Value *R = RHS->codegen();
+    if (!L || !R) return nullptr;
+
+    switch (Op) {
+    case '+':
+        return Builder->CreateFAdd(L, R, "addtmp");
+    case '-':
+        return Builder->CreateFSub(L, R, "subtmp");
+    case '*':
+        return Builder->CreateFMul(L, R, "multmp");
+    case '<':
+        L = Builder->CreateFCmpULT(L, R, "cmptmp");
+        // Convert bool 0/1 to double 0.0 or 1.0
+        return Builder->CreateUIToFP(L, llvm::Type::getDoubleTy(*TheContext), "booltmp");
+    default:
+        std::cerr << "invalid binary operator\n";
+        return nullptr;
+    }
+}
+
+llvm::Value *CallExprAST::codegen() {
+    llvm::Function *CalleeF = TheModule->getFunction(Callee);
+    if (!CalleeF) {
+        std::cerr << "Unknown function referenced\n";
+        return nullptr;
+    }
+
+    if (CalleeF->arg_size() != Args.size()) {
+        std::cerr << "Incorrect # arguments passed\n";
+        return nullptr;
+    }
+
+    std::vector<llvm::Value *> ArgsV;
+    for (unsigned i = 0, e = Args.size(); i != e; ++i) {
+        ArgsV.push_back(Args[i]->codegen());
+        if (!ArgsV.back()) return nullptr;
+    }
+
+    return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
+}
+
+llvm::Value *IfExprAST::codegen() {
+    llvm::Value *CondV = Cond->codegen();
+    if (!CondV) return nullptr;
+
+    // Convert condition to a bool by comparing non-equal to 0.0.
+    CondV = Builder->CreateFCmpONE(
+        CondV, llvm::ConstantFP::get(*TheContext, llvm::APFloat(0.0)), "ifcond");
+
+    llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
+
+    // Create blocks for the then and else cases.  Insert the 'then' block at the
+    // end of the function.
+    llvm::BasicBlock *ThenBB =
+        llvm::BasicBlock::Create(*TheContext, "then", TheFunction);
+    llvm::BasicBlock *ElseBB = llvm::BasicBlock::Create(*TheContext, "else");
+    llvm::BasicBlock *MergeBB = llvm::BasicBlock::Create(*TheContext, "ifcont");
+
+    Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+
+    // Emit then value.
+    Builder->SetInsertPoint(ThenBB);
+    llvm::Value *ThenV = Then->codegen();
+    if (!ThenV) return nullptr;
+    Builder->CreateBr(MergeBB);
+    // Codegen of 'Then' can change the current block, update ThenBB for the PHI.
+    ThenBB = Builder->GetInsertBlock();
+
+    // Emit else block.
+    TheFunction->insert(TheFunction->end(), ElseBB);
+    Builder->SetInsertPoint(ElseBB);
+
+    llvm::Value *ElseV = Else->codegen();
+    if (!ElseV) return nullptr;
+
+    Builder->CreateBr(MergeBB);
+    // Codegen of 'Else' can change the current block, update ElseBB for the PHI.
+    ElseBB = Builder->GetInsertBlock();
+
+    // Emit merge block.
+    TheFunction->insert(TheFunction->end(), MergeBB);
+    Builder->SetInsertPoint(MergeBB);
+    llvm::PHINode *PN =
+        Builder->CreatePHI(llvm::Type::getDoubleTy(*TheContext), 2, "iftmp");
+
+    PN->addIncoming(ThenV, ThenBB);
+    PN->addIncoming(ElseV, ElseBB);
+    return PN;
+}
+
+llvm::Value *ForExprAST::codegen() {
+    // Emit the start code first, without 'variable' in scope.
+    llvm::Value *StartVal = Start->codegen();
+    if (!StartVal) return nullptr;
+
+    // Make the new basic block for the loop header, inserting after current
+    // block.
+    llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
+    llvm::BasicBlock *PreheaderBB = Builder->GetInsertBlock();
+    llvm::BasicBlock *LoopBB =
+        llvm::BasicBlock::Create(*TheContext, "loop", TheFunction);
+
+    // Insert an explicit fall through from the current block to the LoopBB.
+    Builder->CreateBr(LoopBB);
+
+    // Start insertion in LoopBB.
+    Builder->SetInsertPoint(LoopBB);
+
+    // Start the PHI node with an entry for Start.
+    llvm::PHINode *Variable = Builder->CreatePHI(
+        llvm::Type::getDoubleTy(*TheContext), 2, VarName);
+    Variable->addIncoming(StartVal, PreheaderBB);
+
+    // Within the loop, the variable is defined equal to the PHI node.  If it
+    // shadows an existing variable, we have to restore it, so save it now.
+    llvm::Value *OldVal = NamedValues[VarName];
+    NamedValues[VarName] = Variable;
+
+    // Emit the body of the loop.  This, like any other expr, can change the
+    // current BB.  Note that we ignore the value computed by the body, but don't
+    // allow an error.
+    if (!Body->codegen()) return nullptr;
+
+    // Emit the step value.
+    llvm::Value *StepVal = nullptr;
+    if (Step) {
+        StepVal = Step->codegen();
+        if (!StepVal) return nullptr;
+    } else {
+        // If not specified, use 1.0.
+        StepVal = llvm::ConstantFP::get(*TheContext, llvm::APFloat(1.0));
+    }
+
+    llvm::Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
+
+    // Compute the end condition.
+    llvm::Value *EndCond = End->codegen();
+    if (!EndCond) return nullptr;
+
+    // Convert condition to a bool by comparing non-equal to 0.0.
+    EndCond = Builder->CreateFCmpONE(
+        EndCond, llvm::ConstantFP::get(*TheContext, llvm::APFloat(0.0)), "loopcond");
+
+    // Create the "after loop" block and insert it.
+    llvm::BasicBlock *LoopEndBB = Builder->GetInsertBlock();
+    llvm::BasicBlock *AfterBB =
+        llvm::BasicBlock::Create(*TheContext, "afterloop", TheFunction);
+
+    // Insert the conditional branch into the end of LoopEndBB.
+    Builder->CreateCondBr(EndCond, LoopBB, AfterBB);
+
+    // Any new code will be inserted in AfterBB.
+    Builder->SetInsertPoint(AfterBB);
+
+    // Add a new entry to the PHI node for the backedge.
+    Variable->addIncoming(NextVar, LoopEndBB);
+
+    // Restore the unshadowed variable.
+    if (OldVal)
+        NamedValues[VarName] = OldVal;
+    else
+        NamedValues.erase(VarName);
+
+    // for expr always returns 0.0.
+    return llvm::Constant::getNullValue(llvm::Type::getDoubleTy(*TheContext));
+}
+
+llvm::Function *PrototypeAST::codegen() {
+    // Make the function type:  double(double,double) etc.
+    std::vector<llvm::Type*> Doubles(Args.size(), llvm::Type::getDoubleTy(*TheContext));
+    
+    llvm::FunctionType *FT = llvm::FunctionType::get(llvm::Type::getDoubleTy(*TheContext), Doubles, false);
+    llvm::Function *F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, Name, TheModule.get());
+
+    // Set names for all arguments.
+    unsigned Idx = 0;
+    for (auto &Arg : F->args())
+        Arg.setName(Args[Idx++]);
+
+    return F;
+}
+
+llvm::Function *FunctionAST::codegen() {
+    // Check for an existing function from a previous 'extern' declaration.
+    llvm::Function *TheFunction = TheModule->getFunction(Proto->getName());
+
+    if (!TheFunction)
+        TheFunction = Proto->codegen();
+
+    if (!TheFunction) return nullptr;
+    
+    if (!TheFunction->empty()) {
+        std::cerr << "Function cannot be redefined.\n";
+        return nullptr;
+    }
+
+    // Create a new basic block to start insertion into.
+    llvm::BasicBlock *BB = llvm::BasicBlock::Create(*TheContext, "entry", TheFunction);
+    Builder->SetInsertPoint(BB);
+
+    // Record the function arguments in the NamedValues map.
+    NamedValues.clear();
+    for (auto &Arg : TheFunction->args())
+        NamedValues[std::string(Arg.getName())] = &Arg;
+
+    if (llvm::Value *RetVal = Body->codegen()) {
+        // Finish off the function.
+        Builder->CreateRet(RetVal);
+
+        // Validate the generated code, checking for consistency.
+        llvm::verifyFunction(*TheFunction);
+
+        // Optimize the function.
+        FPM->run(*TheFunction, *FAM);
+
+        return TheFunction;
+    }
+
+    // Error reading body, remove function.
+    TheFunction->eraseFromParent();
+    return nullptr;
+}
