@@ -6,7 +6,6 @@
 #include <llvm/IR/Value.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/Passes/PassBuilder.h>
-#include <llvm/Passes/StandardInstrumentations.h>
 #include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Transforms/Scalar/GVN.h>
 #include <llvm/Transforms/Scalar/Reassociate.h>
@@ -24,7 +23,5 @@ extern std::unique_ptr<llvm::LoopAnalysisManager> LAM;
 extern std::unique_ptr<llvm::FunctionAnalysisManager> FAM;
 extern std::unique_ptr<llvm::CGSCCAnalysisManager> CGAM;
 extern std::unique_ptr<llvm::ModuleAnalysisManager> MAM;
-extern std::unique_ptr<llvm::PassInstrumentationCallbacks> PIC;
-extern std::unique_ptr<llvm::StandardInstrumentations> SI;
 
 void InitializeModule();

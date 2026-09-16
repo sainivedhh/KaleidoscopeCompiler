@@ -21,20 +21,23 @@ jobs:
     - name: Install LLVM (Ubuntu)
       if: runner.os == 'Linux'
       run: |
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+        sudo add-apt-repository "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main"
         sudo apt-get update
-        sudo apt-get install -y llvm-15-dev
+        sudo apt-get install -y llvm-18-dev
+        echo "LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm" >> $GITHUB_ENV
 
     - name: Install LLVM (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install llvm@15
-        echo "LLVM_DIR=$(brew --prefix llvm@15)/lib/cmake/llvm" >> $GITHUB_ENV
+        brew install llvm@18
+        echo "LLVM_DIR=$(brew --prefix llvm@18)/lib/cmake/llvm" >> $GITHUB_ENV
 
     - name: Install LLVM (Windows)
       if: runner.os == 'Windows'
-      # We download a pre-built binary instead of vcpkg because compiling LLVM from source via vcpkg takes ~2 hours on CI.
+      # Download pre-built LLVM 18 binaries to avoid compiling from source
       run: |
-        Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-15.0.7/LLVM-15.0.7-win64.exe" -OutFile "llvm-installer.exe"
+        Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/LLVM-18.1.8-win64.exe" -OutFile "llvm-installer.exe"
         Start-Process -FilePath "llvm-installer.exe" -ArgumentList "/S", "/D=C:\LLVM" -Wait -NoNewWindow
         echo "LLVM_DIR=C:\LLVM\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
 

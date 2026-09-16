@@ -13,8 +13,6 @@ std::unique_ptr<llvm::LoopAnalysisManager> LAM;
 std::unique_ptr<llvm::FunctionAnalysisManager> FAM;
 std::unique_ptr<llvm::CGSCCAnalysisManager> CGAM;
 std::unique_ptr<llvm::ModuleAnalysisManager> MAM;
-std::unique_ptr<llvm::PassInstrumentationCallbacks> PIC;
-std::unique_ptr<llvm::StandardInstrumentations> SI;
 
 void InitializeModule() {
     TheContext = std::make_unique<llvm::LLVMContext>();
@@ -27,10 +25,6 @@ void InitializeModule() {
     FAM = std::make_unique<llvm::FunctionAnalysisManager>();
     CGAM = std::make_unique<llvm::CGSCCAnalysisManager>();
     MAM = std::make_unique<llvm::ModuleAnalysisManager>();
-    PIC = std::make_unique<llvm::PassInstrumentationCallbacks>();
-    SI = std::make_unique<llvm::StandardInstrumentations>(*TheContext, true);
-
-    SI->registerCallbacks(*PIC, MAM.get());
 
     // Add transform passes.
     FPM->addPass(llvm::InstCombinePass());
