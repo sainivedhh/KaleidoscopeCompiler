@@ -16,7 +16,7 @@ add_definitions(${LLVM_DEFINITIONS})
 # Compiler Library
 add_library(CompilerLib src/Lexer.cpp src/Parser.cpp src/CodeGen.cpp)
 target_include_directories(CompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-llvm_map_components_to_libnames(llvm_libs Core Support)
+llvm_map_components_to_libnames(llvm_libs Core Support Passes Target)
 target_link_libraries(CompilerLib PUBLIC ${llvm_libs})
 
 # Tests
