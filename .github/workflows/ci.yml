@@ -20,6 +20,7 @@ jobs:
 
     - name: Install LLVM (Ubuntu)
       if: runner.os == 'Linux'
+      shell: bash
       run: |
         wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
         sudo add-apt-repository "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main"
@@ -29,20 +30,35 @@ jobs:
 
     - name: Install LLVM (macOS)
       if: runner.os == 'macOS'
+      shell: bash
       run: |
         brew install llvm@18
         echo "LLVM_DIR=$(brew --prefix llvm@18)/lib/cmake/llvm" >> $GITHUB_ENV
 
     - name: Install LLVM (Windows)
       if: runner.os == 'Windows'
-      # Download pre-built LLVM 18 binaries to avoid compiling from source
+      shell: pwsh
       run: |
-        Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/LLVM-18.1.8-win64.exe" -OutFile "llvm-installer.exe"
-        Start-Process -FilePath "llvm-installer.exe" -ArgumentList "/S", "/D=C:\LLVM" -Wait -NoNewWindow
-        echo "LLVM_DIR=C:\LLVM\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
+        $llvmRoot = "C:\LLVM"
+        if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
+          $llvmRoot = "$env:ProgramFiles\LLVM"
+        }
+
+        if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
+          throw "LLVMConfig.cmake not found under $llvmRoot"
+        }
+
+        "LLVM_DIR=$llvmRoot\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "$llvmRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
     - name: Configure CMake
-      run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+      shell: pwsh
+      run: |
+        if ($env:RUNNER_OS -eq "Windows") {
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$env:LLVM_DIR"
+        } else {
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+        }
 
     - name: Build
       run: cmake --build build --config Release
