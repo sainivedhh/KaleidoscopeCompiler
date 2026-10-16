@@ -45,6 +45,20 @@ jobs:
         }
 
         if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
+          Write-Host "LLVMConfig.cmake not found. Installing LLVM via Chocolatey..."
+          choco install llvm -y --no-progress
+          $llvmRoot = "C:\Program Files\LLVM"
+        }
+
+        if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
+          # Fallback check under other standard Program Files paths
+          $candidate = Get-ChildItem -Path "C:\Program Files\LLVM", "C:\LLVM", "C:\ProgramData\chocolatey\lib\llvm" -Recurse -Filter "LLVMConfig.cmake" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($candidate) {
+            $llvmDir = $candidate.DirectoryName
+            "LLVM_DIR=$llvmDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host "Found LLVMConfig at $llvmDir"
+            exit 0
+          }
           throw "LLVMConfig.cmake not found under $llvmRoot"
         }
 
