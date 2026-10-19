@@ -39,31 +39,45 @@ jobs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        $llvmRoot = "C:\LLVM"
-        if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
-          $llvmRoot = "$env:ProgramFiles\LLVM"
-        }
+        $searchRoots = @(
+          "$env:ProgramFiles\LLVM",
+          "C:\LLVM",
+          "C:\ProgramData\chocolatey\lib\llvm"
+        )
 
-        if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
-          Write-Host "LLVMConfig.cmake not found. Installing LLVM via Chocolatey..."
-          choco install llvm -y --no-progress
-          $llvmRoot = "C:\Program Files\LLVM"
-        }
-
-        if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
-          # Fallback check under other standard Program Files paths
-          $candidate = Get-ChildItem -Path "C:\Program Files\LLVM", "C:\LLVM", "C:\ProgramData\chocolatey\lib\llvm" -Recurse -Filter "LLVMConfig.cmake" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($candidate) {
-            $llvmDir = $candidate.DirectoryName
-            "LLVM_DIR=$llvmDir" | Out-File -FilePath $env:GITHUB_ENV -Append
-            Write-Host "Found LLVMConfig at $llvmDir"
-            exit 0
+        $llvmConfig = $null
+        foreach ($root in $searchRoots) {
+          if (Test-Path $root) {
+            $found = Get-ChildItem -Path $root -Filter "LLVMConfig.cmake" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) {
+              $llvmConfig = $found.FullName
+              break
+            }
           }
-          throw "LLVMConfig.cmake not found under $llvmRoot"
         }
 
-        "LLVM_DIR=$llvmRoot\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
-        "$llvmRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+        if (-not $llvmConfig) {
+          Write-Host "LLVM is present on the runner but its CMake development files are missing. Reinstalling the package..."
+          choco install llvm -y --no-progress --force
+          foreach ($root in $searchRoots) {
+            if (Test-Path $root) {
+              $found = Get-ChildItem -Path $root -Filter "LLVMConfig.cmake" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($found) {
+                $llvmConfig = $found.FullName
+                break
+              }
+            }
+          }
+        }
+
+        if (-not $llvmConfig) {
+          throw "LLVMConfig.cmake is still missing after reinstalling LLVM. The LLVM package must include CMake development files."
+        }
+
+        $llvmDir = Split-Path -Parent $llvmConfig
+        "LLVM_DIR=$llvmDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "$((Split-Path -Parent (Split-Path -Parent $llvmDir)))\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+        Write-Host "Using LLVMConfig.cmake at $llvmConfig"
 
     - name: Configure CMake
       shell: pwsh
