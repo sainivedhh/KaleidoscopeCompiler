@@ -39,47 +39,31 @@ jobs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        $searchRoots = @(
-          "$env:ProgramFiles\LLVM",
-          "C:\LLVM",
-          "C:\ProgramData\chocolatey\lib\llvm"
-        )
+        # The standard LLVM installer does not ship LLVMConfig.cmake on Windows.
+        # Download the official clang+llvm development archive, which includes the CMake package.
+        $archiveUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang%2Bllvm-18.1.8-x86_64-pc-windows-msvc.tar.xz"
+        $archivePath = Join-Path $env:RUNNER_TEMP "clang-llvm.tar.xz"
+        $extractRoot = Join-Path $env:RUNNER_TEMP "llvm-dev"
 
-        $llvmConfig = $null
-        foreach ($root in $searchRoots) {
-          if (Test-Path $root) {
-            $found = Get-ChildItem -Path $root -Filter "LLVMConfig.cmake" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) {
-              $llvmConfig = $found.FullName
-              break
-            }
-          }
+        New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+        Invoke-WebRequest -Uri $archiveUrl -OutFile $archivePath
+
+        # Extract the .tar.xz archive using the tar executable available on Windows runners.
+        tar -xf $archivePath -C $extractRoot
+        if ($LASTEXITCODE -ne 0) {
+          throw "Failed to extract the official LLVM development archive."
         }
 
+        $llvmConfig = Get-ChildItem -Path $extractRoot -Filter "LLVMConfig.cmake" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $llvmConfig) {
-          Write-Host "LLVM is present on the runner but its CMake development files are missing. Reinstalling the package..."
-          choco install llvm -y --no-progress --force
-          foreach ($root in $searchRoots) {
-            if (Test-Path $root) {
-              $found = Get-ChildItem -Path $root -Filter "LLVMConfig.cmake" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($found) {
-                $llvmConfig = $found.FullName
-                break
-              }
-            }
-          }
+          throw "Official clang+llvm archive did not contain LLVMConfig.cmake."
         }
 
-        if (-not $llvmConfig) {
-          throw "LLVMConfig.cmake is still missing after reinstalling LLVM. The LLVM package must include CMake development files."
-        }
-
-        $llvmDir = Split-Path -Parent $llvmConfig
-        $llvmRoot = $llvmDir
-        1..3 | ForEach-Object { $llvmRoot = Split-Path -Parent $llvmRoot }
+        $llvmDir = $llvmConfig.DirectoryName
+        $llvmRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $llvmDir))
         "LLVM_DIR=$llvmDir" | Out-File -FilePath $env:GITHUB_ENV -Append
         (Join-Path $llvmRoot "bin") | Out-File -FilePath $env:GITHUB_PATH -Append
-        Write-Host "Using LLVMConfig.cmake at $llvmConfig"
+        Write-Host "Using LLVM development package at $llvmConfig"
 
     - name: Configure CMake
       shell: pwsh
