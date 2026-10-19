@@ -75,8 +75,10 @@ jobs:
         }
 
         $llvmDir = Split-Path -Parent $llvmConfig
+        $llvmRoot = $llvmDir
+        1..3 | ForEach-Object { $llvmRoot = Split-Path -Parent $llvmRoot }
         "LLVM_DIR=$llvmDir" | Out-File -FilePath $env:GITHUB_ENV -Append
-        "$((Split-Path -Parent (Split-Path -Parent $llvmDir)))\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+        (Join-Path $llvmRoot "bin") | Out-File -FilePath $env:GITHUB_PATH -Append
         Write-Host "Using LLVMConfig.cmake at $llvmConfig"
 
     - name: Configure CMake
