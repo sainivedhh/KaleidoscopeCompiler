@@ -66,14 +66,52 @@ jobs:
         Write-Host "Using LLVM development package at $llvmConfig"
 
         # This prebuilt LLVM release references the VS 2019 DIA SDK library by absolute path.
-        # GitHub's hosted Windows image uses VS 2022, so map that expected path to its installed DIA SDK library.
-        $diaLibrary = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio" -Filter "diaguids.lib" -File -Recurse -ErrorAction SilentlyContinue |
-          Where-Object { $_.FullName -match "\\DIA SDK\\lib\\amd64\\diaguids\.lib$" } |
-          Select-Object -First 1
-        if (-not $diaLibrary) {
-          throw "Could not locate the Visual Studio DIA SDK diaguids.lib required by the LLVM package."
+        # Hosted images can place Visual Studio under either Program Files root and may use VS 2022.
+        $vsRoots = @(
+          (Join-Path $env:ProgramFiles "Microsoft Visual Studio"),
+          (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio")
+        ) | Where-Object { Test-Path $_ }
+
+        $diaLibrary = $null
+        foreach ($root in $vsRoots) {
+          $diaLibrary = Get-ChildItem -Path $root -Filter "diaguids.lib" -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\DIA SDK\\lib\\amd64\\diaguids\.lib$" } |
+            Select-Object -First 1
+          if ($diaLibrary) { break }
         }
-        $expectedDiaDir = "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\DIA SDK\lib\amd64"
+
+        # If the DIA SDK is not present in the default image paths, query Visual Studio
+        # installations directly and search each reported installation root.
+        if (-not $diaLibrary) {
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\\Installer\\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $installations = & $vswhere -all -products '*' -property installationPath
+            foreach ($installation in $installations) {
+              $diaLibrary = Get-ChildItem -Path $installation -Filter "diaguids.lib" -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "\\DIA SDK\\lib\\amd64\\diaguids\.lib$" } |
+                Select-Object -First 1
+              if ($diaLibrary) { break }
+            }
+          }
+        }
+
+        if (-not $diaLibrary) {
+          Write-Host "DIA SDK library not found in Visual Studio installations. Searching standard tool locations."
+          $toolRoots = @("$env:ProgramFiles\\Microsoft Visual Studio", "$env:ProgramFiles(x86)\\Microsoft Visual Studio", "$env:RUNNER_TEMP")
+          foreach ($root in $toolRoots) {
+            if (Test-Path $root) {
+              $diaLibrary = Get-ChildItem -Path $root -Filter "diaguids.lib" -File -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+              if ($diaLibrary) { break }
+            }
+          }
+        }
+
+        if (-not $diaLibrary) {
+          throw "Could not locate diaguids.lib. Visual Studio/DIA SDK paths checked: $($vsRoots -join '; ')"
+        }
+
+        $expectedDiaDir = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Professional\\DIA SDK\\lib\\amd64"
         New-Item -ItemType Directory -Force -Path $expectedDiaDir | Out-Null
         Copy-Item -Path $diaLibrary.FullName -Destination (Join-Path $expectedDiaDir "diaguids.lib") -Force
         Write-Host "Mapped DIA SDK library from $($diaLibrary.FullName) to $expectedDiaDir"
